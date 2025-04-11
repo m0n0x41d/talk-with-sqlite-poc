@@ -1,3 +1,5 @@
+# DO NOT USE THIS CODE IN PRODUCTION.
+# YOU SHOULD SECURE ENVIRONMENT WHERE YOU ALLOWING LLM TO RUN ANY CODE MUCH BETTER!
 import sqlite3
 from os import getenv
 from typing import Literal
@@ -10,17 +12,12 @@ from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 
-from prompts import text_to_sql_system_prompt
+from prompts import text_to_code_system_prompt
 
 LOGGER = loguru.logger
 
-DB1, DB2, DB3 = (
-    "dbs/db1/db1.sqlite",
-    "dbs/db2/db2.sqlite",
-    "dbs/db3/db3.sqlite",
-)
-DB_IN_USE = DB3
-LOGGER.info(f"Using DB: {DB_IN_USE}")
+DB1 = "dbs/db1/db1.sqlite"
+LOGGER.info(f"Using DB: {DB1}")
 
 
 load_dotenv()
@@ -43,16 +40,24 @@ class SqlStrategy(BaseModel):
     does_this_require_subquery: bool
     does_this_require_recursive_query: bool
 
+    do_i_have_all_the_python_libraries_that_i_need: bool
+    which_libraries_do_i_need_but_dont_have: list[str]
+
+
+class FinalResponse(BaseModel):
+    response_type: Literal["code", "table"]
+    content: str
+
 
 class SqlQuery(BaseModel):
     strategy: SqlStrategy
-    query: str
+    response: FinalResponse
 
 
 sql_talk_agent = Agent(
     model,
-    system_prompt=text_to_sql_system_prompt(
-        db_schema_path=DB_IN_USE.replace(".sqlite", "_schema.md"),
+    system_prompt=text_to_code_system_prompt(
+        DB1.replace(".sqlite", "_schema.md"),
     ),
     result_type=SqlQuery,
     model_settings=ModelSettings(temperature=0.0),
@@ -78,9 +83,21 @@ if __name__ == "__main__":
         raw_model_response = sql_talk_agent.run_sync(user_question)
         LOGGER.info(f"Raw model response: {raw_model_response}")
 
-        try:
-            query_result = execute_query(DB_IN_USE, raw_model_response.data.query)
-            LOGGER.info(f"Query result: {query_result}")
-        except sqlite3.Error as e:
-            LOGGER.error(f"SQLite error executing query: {e}")
-            LOGGER.error(f"Failed query: {raw_model_response.data.query}")
+        match raw_model_response.data.response.response_type:
+            case "code":
+                code_to_execute = raw_model_response.data.response.content
+                code_to_execute = code_to_execute.replace("DATABASE_PATH", f'"{DB1}"')
+                print("This is the code I'm going to execute:")
+                print(code_to_execute)
+                ok = input("Execute the code? (y/n) ")
+                if ok.lower() not in ["y", "yes", "ok", "okay"]:
+                    LOGGER.info("Code not executed")
+                    continue
+                LOGGER.info(f"Executing generated code:\\n{code_to_execute}")
+                try:
+                    exec(code_to_execute, globals())
+                except Exception as e:
+                    LOGGER.error(f"Error executing generated code: {e}")
+            case "table":
+                table_to_display = raw_model_response.data.response.content
+                print(table_to_display)
